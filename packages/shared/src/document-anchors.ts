@@ -369,11 +369,11 @@ function formattingDelimiterIndexes(text: string): Set<number> {
   const strikethroughRuns = runs.filter((run) => run.char === "~");
   const emphasisRuns = runs.filter((run) => run.char !== "~");
   if (runs[0]?.char === "~") {
-    const spans = pairStrikethroughRuns(strikethroughRuns, formatting, () => -1);
-    pairEmphasisRuns(emphasisRuns, formatting, (run) => innermostSpanStart(spans, run.start));
+    const scopeAt = innermostSpanLookup(pairStrikethroughRuns(strikethroughRuns, formatting, () => -1));
+    pairEmphasisRuns(emphasisRuns, formatting, (run) => scopeAt(run.start));
   } else {
-    const spans = pairEmphasisRuns(emphasisRuns, formatting, () => -1);
-    pairStrikethroughRuns(strikethroughRuns, formatting, (run) => innermostSpanStart(spans, run.start));
+    const scopeAt = innermostSpanLookup(pairEmphasisRuns(emphasisRuns, formatting, () => -1));
+    pairStrikethroughRuns(strikethroughRuns, formatting, (run) => scopeAt(run.start));
   }
   return formatting;
 }
@@ -382,11 +382,29 @@ type Span = [number, number];
 
 function pairEmphasisRuns(runs: DelimiterRun[], formatting: Set<number>, scopeOf: (run: DelimiterRun) => number): Span[] {
   const spans: Span[] = [];
-  const openers: DelimiterRun[] = [];
+  const stacks = new Map<string, DelimiterRun[]>();
+  const searchFloors = new Map<string, number>();
+  const findIn = (openers: DelimiterRun[], closer: DelimiterRun): number => {
+    const key = `${closer.scope}:${closer.char}:${closer.canOpen}:${closer.remaining % 3}`;
+    const floor = Math.min(searchFloors.get(key) ?? 0, openers.length);
+    const index = findOpener(openers, closer, floor);
+    if (index === -1) searchFloors.set(key, openers.length);
+    return index;
+  };
+  const stackFor = (scope: number, char: string): DelimiterRun[] => {
+    const key = `${scope}:${char}`;
+    let stack = stacks.get(key);
+    if (!stack) {
+      stack = [];
+      stacks.set(key, stack);
+    }
+    return stack;
+  };
   for (const closer of runs) {
     closer.scope = scopeOf(closer);
+    const openers = stackFor(closer.scope, closer.char);
     if (closer.canClose) {
-      let openerIndex = findOpener(openers, closer);
+      let openerIndex = findIn(openers, closer);
       while (openerIndex !== -1 && closer.remaining > 0) {
         const opener = openers[openerIndex]!;
         const used = opener.remaining >= 2 && closer.remaining >= 2 ? 2 : 1;
@@ -400,7 +418,9 @@ function pairEmphasisRuns(runs: DelimiterRun[], formatting: Set<number>, scopeOf
         closer.usedFromStart += used;
         closer.remaining -= used;
         openers.length = opener.remaining > 0 ? openerIndex + 1 : openerIndex;
-        openerIndex = closer.remaining > 0 ? findOpener(openers, closer) : -1;
+        const others = stackFor(closer.scope, closer.char === "*" ? "_" : "*");
+        while (others.length > 0 && others[others.length - 1]!.start > opener.start) others.pop();
+        openerIndex = closer.remaining > 0 ? findIn(openers, closer) : -1;
       }
     }
     if (closer.canOpen && closer.remaining > 0) openers.push(closer);
@@ -410,45 +430,49 @@ function pairEmphasisRuns(runs: DelimiterRun[], formatting: Set<number>, scopeOf
 
 function pairStrikethroughRuns(runs: DelimiterRun[], formatting: Set<number>, scopeOf: (run: DelimiterRun) => number): Span[] {
   const spans: Span[] = [];
-  const openers: DelimiterRun[] = [];
+  const stacks = new Map<string, DelimiterRun[]>();
+  const stackFor = (scope: number, length: number): DelimiterRun[] => {
+    const key = `${scope}:${length}`;
+    let stack = stacks.get(key);
+    if (!stack) {
+      stack = [];
+      stacks.set(key, stack);
+    }
+    return stack;
+  };
   for (const closer of runs) {
     closer.scope = scopeOf(closer);
-    if (closer.canClose) {
-      let openerIndex = openers.length - 1;
-      while (
-        openerIndex >= 0
-        && (openers[openerIndex]!.length !== closer.length || openers[openerIndex]!.scope !== closer.scope)
-      ) {
-        openerIndex -= 1;
+    const openers = stackFor(closer.scope, closer.length);
+    const opener = closer.canClose ? openers.pop() : undefined;
+    if (opener) {
+      const others = stackFor(closer.scope, closer.length === 1 ? 2 : 1);
+      while (others.length > 0 && others[others.length - 1]!.start > opener.start) others.pop();
+      for (let offset = 0; offset < closer.length; offset += 1) {
+        formatting.add(opener.start + offset);
+        formatting.add(closer.start + offset);
       }
-      if (openerIndex >= 0) {
-        const opener = openers[openerIndex]!;
-        openers.length = openerIndex;
-        for (let offset = 0; offset < closer.length; offset += 1) {
-          formatting.add(opener.start + offset);
-          formatting.add(closer.start + offset);
-        }
-        spans.push([opener.start + opener.length, closer.start]);
-        continue;
-      }
+      spans.push([opener.start + opener.length, closer.start]);
+      continue;
     }
     if (closer.canOpen) openers.push(closer);
   }
   return spans;
 }
 
-function innermostSpanStart(spans: Span[], position: number): number {
-  let innermost = -1;
-  for (const [start, end] of spans) {
-    if (start <= position && position < end && start > innermost) innermost = start;
-  }
-  return innermost;
+function innermostSpanLookup(spans: Span[]): (position: number) => number {
+  const sorted = [...spans].sort((left, right) => left[0] - right[0] || right[1] - left[1]);
+  const open: Span[] = [];
+  let next = 0;
+  return (position) => {
+    while (next < sorted.length && sorted[next]![0] <= position) open.push(sorted[next++]!);
+    while (open.length > 0 && open[open.length - 1]![1] <= position) open.pop();
+    return open.length > 0 ? open[open.length - 1]![0] : -1;
+  };
 }
 
-function findOpener(openers: DelimiterRun[], closer: DelimiterRun): number {
-  for (let index = openers.length - 1; index >= 0; index -= 1) {
+function findOpener(openers: DelimiterRun[], closer: DelimiterRun, floor: number): number {
+  for (let index = openers.length - 1; index >= floor; index -= 1) {
     const opener = openers[index]!;
-    if (opener.char !== closer.char || opener.remaining === 0 || opener.scope !== closer.scope) continue;
     if (
       (opener.canClose || closer.canOpen)
       && closer.remaining % 3 !== 0

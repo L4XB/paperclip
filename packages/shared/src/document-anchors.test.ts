@@ -85,6 +85,21 @@ describe("document anchor verification and remapping", () => {
     }
   });
 
+  it("pairs delimiters in linear time on long lines", () => {
+    const lines = [
+      "*a* ~b~ ".repeat(50_000),
+      "_a ".repeat(80_000) + "b* ".repeat(80_000),
+      " **x".repeat(60_000) + "a*b".repeat(80_000),
+      "~~a ".repeat(60_000) + "b~ ".repeat(60_000),
+    ];
+
+    for (const line of lines) {
+      const started = performance.now();
+      projectMarkdownToText(line);
+      expect(performance.now() - started).toBeLessThan(5_000);
+    }
+  });
+
   it("maps an escaped character to its own source offset", () => {
     const projection = projectMarkdownToText("a \\* b");
     const star = projection.text.indexOf("*");

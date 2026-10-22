@@ -74,6 +74,10 @@ describe("document anchor verification and remapping", () => {
       ["Read *the [guide](a*b) now* please.", "Read the guide now please."],
       ["Mixed *foo**bar* text.", "Mixed foo**bar text."],
       ["Nested **outer *inner* more** end.", "Nested outer inner more end."],
+      ["Read *one***two***three* now.", "Read onetwothree now."],
+      ["ab*~~*~~*a", "ab~~~~*a"],
+      ["ab~*~a*a~a", "ab~*a*aa"],
+      ["ab.*~~ba~a~~a~a", "ab.*ba~aa~a"],
     ];
 
     for (const [markdown, rendered] of cases) {

@@ -305,6 +305,9 @@ interface DelimiterRun {
   start: number;
   length: number;
   remaining: number;
+  usedFromStart: number;
+  usedFromEnd: number;
+  scope: number;
   canOpen: boolean;
   canClose: boolean;
 }
@@ -341,8 +344,10 @@ function formattingDelimiterIndexes(text: string): Set<number> {
     while (text[end] === char) end += 1;
     const before = text[index - 1] ?? " ";
     const after = text[end] ?? " ";
-    const leftFlanking = !isWhitespace(after) && (!isPunctuation(after) || isWhitespace(before) || isPunctuation(before));
-    const rightFlanking = !isWhitespace(before) && (!isPunctuation(before) || isWhitespace(after) || isPunctuation(after));
+    const leftFlanking = (char !== "~" && after === "~")
+      || (!isWhitespace(after) && (!isPunctuation(after) || isWhitespace(before) || isPunctuation(before)));
+    const rightFlanking = (char !== "~" && before === "~")
+      || (!isWhitespace(before) && (!isPunctuation(before) || isWhitespace(after) || isPunctuation(after)));
     const length = end - index;
     if (char !== "~" || length <= 2) {
       runs.push({
@@ -350,6 +355,9 @@ function formattingDelimiterIndexes(text: string): Set<number> {
         start: index,
         length,
         remaining: length,
+        usedFromStart: 0,
+        usedFromEnd: 0,
+        scope: -1,
         canOpen: char === "_" ? leftFlanking && (!rightFlanking || isPunctuation(before)) : leftFlanking,
         canClose: char === "_" ? rightFlanking && (!leftFlanking || isPunctuation(after)) : rightFlanking,
       });
@@ -358,18 +366,38 @@ function formattingDelimiterIndexes(text: string): Set<number> {
   }
 
   const formatting = new Set<number>();
+  const strikethroughRuns = runs.filter((run) => run.char === "~");
+  const emphasisRuns = runs.filter((run) => run.char !== "~");
+  if (runs[0]?.char === "~") {
+    const spans = pairStrikethroughRuns(strikethroughRuns, formatting, () => -1);
+    pairEmphasisRuns(emphasisRuns, formatting, (run) => innermostSpanStart(spans, run.start));
+  } else {
+    const spans = pairEmphasisRuns(emphasisRuns, formatting, () => -1);
+    pairStrikethroughRuns(strikethroughRuns, formatting, (run) => innermostSpanStart(spans, run.start));
+  }
+  return formatting;
+}
+
+type Span = [number, number];
+
+function pairEmphasisRuns(runs: DelimiterRun[], formatting: Set<number>, scopeOf: (run: DelimiterRun) => number): Span[] {
+  const spans: Span[] = [];
   const openers: DelimiterRun[] = [];
   for (const closer of runs) {
+    closer.scope = scopeOf(closer);
     if (closer.canClose) {
       let openerIndex = findOpener(openers, closer);
       while (openerIndex !== -1 && closer.remaining > 0) {
         const opener = openers[openerIndex]!;
-        const used = closer.char === "~" ? closer.remaining : opener.remaining >= 2 && closer.remaining >= 2 ? 2 : 1;
+        const used = opener.remaining >= 2 && closer.remaining >= 2 ? 2 : 1;
         for (let offset = 0; offset < used; offset += 1) {
-          formatting.add(opener.start + opener.remaining - 1 - offset);
-          formatting.add(closer.start + closer.length - closer.remaining + offset);
+          formatting.add(opener.start + opener.length - 1 - opener.usedFromEnd - offset);
+          formatting.add(closer.start + closer.usedFromStart + offset);
         }
+        spans.push([opener.start + opener.length - opener.usedFromEnd, closer.start + closer.usedFromStart]);
+        opener.usedFromEnd += used;
         opener.remaining -= used;
+        closer.usedFromStart += used;
         closer.remaining -= used;
         openers.length = opener.remaining > 0 ? openerIndex + 1 : openerIndex;
         openerIndex = closer.remaining > 0 ? findOpener(openers, closer) : -1;
@@ -377,20 +405,57 @@ function formattingDelimiterIndexes(text: string): Set<number> {
     }
     if (closer.canOpen && closer.remaining > 0) openers.push(closer);
   }
-  return formatting;
+  return spans;
+}
+
+function pairStrikethroughRuns(runs: DelimiterRun[], formatting: Set<number>, scopeOf: (run: DelimiterRun) => number): Span[] {
+  const spans: Span[] = [];
+  const openers: DelimiterRun[] = [];
+  for (const closer of runs) {
+    closer.scope = scopeOf(closer);
+    if (closer.canClose) {
+      let openerIndex = openers.length - 1;
+      while (
+        openerIndex >= 0
+        && (openers[openerIndex]!.length !== closer.length || openers[openerIndex]!.scope !== closer.scope)
+      ) {
+        openerIndex -= 1;
+      }
+      if (openerIndex >= 0) {
+        const opener = openers[openerIndex]!;
+        openers.length = openerIndex;
+        for (let offset = 0; offset < closer.length; offset += 1) {
+          formatting.add(opener.start + offset);
+          formatting.add(closer.start + offset);
+        }
+        spans.push([opener.start + opener.length, closer.start]);
+        continue;
+      }
+    }
+    if (closer.canOpen) openers.push(closer);
+  }
+  return spans;
+}
+
+function innermostSpanStart(spans: Span[], position: number): number {
+  let innermost = -1;
+  for (const [start, end] of spans) {
+    if (start <= position && position < end && start > innermost) innermost = start;
+  }
+  return innermost;
 }
 
 function findOpener(openers: DelimiterRun[], closer: DelimiterRun): number {
   for (let index = openers.length - 1; index >= 0; index -= 1) {
     const opener = openers[index]!;
-    if (opener.char !== closer.char || opener.remaining === 0) continue;
-    if (closer.char === "~") {
-      if (opener.length === closer.length) return index;
+    if (opener.char !== closer.char || opener.remaining === 0 || opener.scope !== closer.scope) continue;
+    if (
+      (opener.canClose || closer.canOpen)
+      && closer.remaining % 3 !== 0
+      && (opener.remaining + closer.remaining) % 3 === 0
+    ) {
       continue;
     }
-    const eitherBoth = (opener.canOpen && opener.canClose) || (closer.canOpen && closer.canClose);
-    const sum = opener.length + closer.length;
-    if (eitherBoth && sum % 3 === 0 && !(opener.length % 3 === 0 && closer.length % 3 === 0)) continue;
     return index;
   }
   return -1;

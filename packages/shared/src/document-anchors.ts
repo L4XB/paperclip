@@ -384,12 +384,23 @@ function pairEmphasisRuns(runs: DelimiterRun[], formatting: Set<number>, scopeOf
   const spans: Span[] = [];
   const stacks = new Map<string, DelimiterRun[]>();
   const searchFloors = new Map<string, number>();
+  const floorKey = (closer: DelimiterRun, canOpen: boolean, sizeClass: number) =>
+    `${closer.scope}:${closer.char}:${canOpen}:${sizeClass}`;
   const findIn = (openers: DelimiterRun[], closer: DelimiterRun): number => {
-    const key = `${closer.scope}:${closer.char}:${closer.canOpen}:${closer.remaining % 3}`;
+    const key = floorKey(closer, closer.canOpen, closer.remaining % 3);
     const floor = Math.min(searchFloors.get(key) ?? 0, openers.length);
     const index = findOpener(openers, closer, floor);
     if (index === -1) searchFloors.set(key, openers.length);
     return index;
+  };
+  const lowerFloors = (closer: DelimiterRun, openerIndex: number) => {
+    for (const canOpen of [true, false]) {
+      for (let sizeClass = 0; sizeClass < 3; sizeClass += 1) {
+        const key = floorKey(closer, canOpen, sizeClass);
+        const floor = searchFloors.get(key);
+        if (floor !== undefined && floor > openerIndex) searchFloors.set(key, openerIndex);
+      }
+    }
   };
   const stackFor = (scope: number, char: string): DelimiterRun[] => {
     const key = `${scope}:${char}`;
@@ -418,6 +429,7 @@ function pairEmphasisRuns(runs: DelimiterRun[], formatting: Set<number>, scopeOf
         closer.usedFromStart += used;
         closer.remaining -= used;
         openers.length = opener.remaining > 0 ? openerIndex + 1 : openerIndex;
+        lowerFloors(closer, openerIndex);
         const others = stackFor(closer.scope, closer.char === "*" ? "_" : "*");
         while (others.length > 0 && others[others.length - 1]!.start > opener.start) others.pop();
         openerIndex = closer.remaining > 0 ? findIn(openers, closer) : -1;

@@ -78,6 +78,7 @@ describe("document anchor verification and remapping", () => {
       ["ab*~~*~~*a", "ab~~~~*a"],
       ["ab~*~a*a~a", "ab~*a*aa"],
       ["ab.*~~ba~a~~a~a", "ab.*ba~aa~a"],
+      ["a*****b*c**d*e", "a**b*cde"],
     ];
 
     for (const [markdown, rendered] of cases) {

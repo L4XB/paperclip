@@ -49,6 +49,8 @@ interface Candidate {
 }
 
 const DEFAULT_CONTEXT_LENGTH = 48;
+const INLINE_IMAGE_PATTERN = /^!\[([^\]]*)\]\(([^)]*)\)/;
+const INLINE_LINK_PATTERN = /^\[([^\]]+)\]\(([^)]*)\)/;
 
 export function normalizeAnchorText(value: string): string {
   return value.replace(/\s+/g, " ").trim();
@@ -257,7 +259,7 @@ function addInlineMarkdownText(builder: ProjectionBuilder, text: string, sourceO
     const absolute = sourceOffset + index;
     const rest = text.slice(index);
 
-    const image = rest.match(/^!\[([^\]]*)\]\(([^)]*)\)/);
+    const image = rest.match(INLINE_IMAGE_PATTERN);
     if (image) {
       const altStart = absolute + 2;
       builder.addText(image[1] ?? "", altStart);
@@ -265,7 +267,7 @@ function addInlineMarkdownText(builder: ProjectionBuilder, text: string, sourceO
       continue;
     }
 
-    const link = rest.match(/^\[([^\]]+)\]\(([^)]*)\)/);
+    const link = rest.match(INLINE_LINK_PATTERN);
     if (link) {
       const labelStart = absolute + 1;
       builder.addText(link[1] ?? "", labelStart);
@@ -301,7 +303,8 @@ function addInlineMarkdownText(builder: ProjectionBuilder, text: string, sourceO
 interface DelimiterRun {
   char: string;
   start: number;
-  end: number;
+  length: number;
+  remaining: number;
   canOpen: boolean;
   canClose: boolean;
 }
@@ -311,6 +314,14 @@ function formattingDelimiterIndexes(text: string): Set<number> {
   let index = 0;
   while (index < text.length) {
     const char = text[index] ?? "";
+    if (char === "!" || char === "[") {
+      const rest = text.slice(index);
+      const construct = rest.match(INLINE_IMAGE_PATTERN) ?? rest.match(INLINE_LINK_PATTERN);
+      if (construct) {
+        index += construct[0].length;
+        continue;
+      }
+    }
     if (char === "`") {
       const closing = text.indexOf("`", index + 1);
       if (closing > index + 1) {
@@ -332,11 +343,13 @@ function formattingDelimiterIndexes(text: string): Set<number> {
     const after = text[end] ?? " ";
     const leftFlanking = !isWhitespace(after) && (!isPunctuation(after) || isWhitespace(before) || isPunctuation(before));
     const rightFlanking = !isWhitespace(before) && (!isPunctuation(before) || isWhitespace(after) || isPunctuation(after));
-    if (char !== "~" || end - index <= 2) {
+    const length = end - index;
+    if (char !== "~" || length <= 2) {
       runs.push({
         char,
         start: index,
-        end,
+        length,
+        remaining: length,
         canOpen: char === "_" ? leftFlanking && (!rightFlanking || isPunctuation(before)) : leftFlanking,
         canClose: char === "_" ? rightFlanking && (!leftFlanking || isPunctuation(after)) : rightFlanking,
       });
@@ -346,27 +359,38 @@ function formattingDelimiterIndexes(text: string): Set<number> {
 
   const formatting = new Set<number>();
   const openers: DelimiterRun[] = [];
-  for (const run of runs) {
-    if (run.canClose) {
-      const openerIndex = findLastOpener(openers, run);
-      if (openerIndex !== -1) {
+  for (const closer of runs) {
+    if (closer.canClose) {
+      let openerIndex = findOpener(openers, closer);
+      while (openerIndex !== -1 && closer.remaining > 0) {
         const opener = openers[openerIndex]!;
-        openers.length = openerIndex;
-        for (let position = opener.start; position < opener.end; position += 1) formatting.add(position);
-        for (let position = run.start; position < run.end; position += 1) formatting.add(position);
-        continue;
+        const used = closer.char === "~" ? closer.remaining : opener.remaining >= 2 && closer.remaining >= 2 ? 2 : 1;
+        for (let offset = 0; offset < used; offset += 1) {
+          formatting.add(opener.start + opener.remaining - 1 - offset);
+          formatting.add(closer.start + closer.length - closer.remaining + offset);
+        }
+        opener.remaining -= used;
+        closer.remaining -= used;
+        openers.length = opener.remaining > 0 ? openerIndex + 1 : openerIndex;
+        openerIndex = closer.remaining > 0 ? findOpener(openers, closer) : -1;
       }
     }
-    if (run.canOpen) openers.push(run);
+    if (closer.canOpen && closer.remaining > 0) openers.push(closer);
   }
   return formatting;
 }
 
-function findLastOpener(openers: DelimiterRun[], closer: DelimiterRun): number {
+function findOpener(openers: DelimiterRun[], closer: DelimiterRun): number {
   for (let index = openers.length - 1; index >= 0; index -= 1) {
     const opener = openers[index]!;
-    if (opener.char !== closer.char) continue;
-    if (closer.char === "~" && opener.end - opener.start !== closer.end - closer.start) continue;
+    if (opener.char !== closer.char || opener.remaining === 0) continue;
+    if (closer.char === "~") {
+      if (opener.length === closer.length) return index;
+      continue;
+    }
+    const eitherBoth = (opener.canOpen && opener.canClose) || (closer.canOpen && closer.canClose);
+    const sum = opener.length + closer.length;
+    if (eitherBoth && sum % 3 === 0 && !(opener.length % 3 === 0 && closer.length % 3 === 0)) continue;
     return index;
   }
   return -1;

@@ -70,6 +70,10 @@ describe("document anchor verification and remapping", () => {
       ["Real **bold**, _em_, ~~gone~~ and __init__.", "Real bold, em, gone and init."],
       ["Unmatched *nix and ~/path stay.", "Unmatched *nix and ~/path stay."],
       ["\\[not a link](https://example.com)", "[not a link](https://example.com)"],
+      ["Read ***bold** tail* now.", "Read bold tail now."],
+      ["Read *the [guide](a*b) now* please.", "Read the guide now please."],
+      ["Mixed *foo**bar* text.", "Mixed foo**bar text."],
+      ["Nested **outer *inner* more** end.", "Nested outer inner more end."],
     ];
 
     for (const [markdown, rendered] of cases) {

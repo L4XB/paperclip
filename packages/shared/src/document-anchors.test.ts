@@ -61,6 +61,29 @@ describe("document text projection", () => {
 });
 
 describe("document anchor verification and remapping", () => {
+  it("keeps delimiter characters that do not format text", () => {
+    const cases: Array<[string, string]> = [
+      ["Set user_id and file_name.py here.", "Set user_id and file_name.py here."],
+      ["Compute 5 * 3 and a ~ b today.", "Compute 5 * 3 and a ~ b today."],
+      ["Path C:\\Users\\ann\\docs is local.", "Path C:\\Users\\ann\\docs is local."],
+      ["Escaped \\*literal\\* and \\_x\\_.", "Escaped *literal* and _x_."],
+      ["Real **bold**, _em_, ~~gone~~ and __init__.", "Real bold, em, gone and init."],
+      ["Unmatched *nix and ~/path stay.", "Unmatched *nix and ~/path stay."],
+      ["\\[not a link](https://example.com)", "[not a link](https://example.com)"],
+    ];
+
+    for (const [markdown, rendered] of cases) {
+      expect(projectMarkdownToText(markdown).text).toBe(rendered);
+    }
+  });
+
+  it("maps an escaped character to its own source offset", () => {
+    const projection = projectMarkdownToText("a \\* b");
+    const star = projection.text.indexOf("*");
+
+    expect(projection.positions[star]).toEqual({ sourceStart: 3, sourceEnd: 4 });
+  });
+
   it("verifies a selector against its base revision", () => {
     const markdown = "Intro text with **selected text** inside.";
     const selector = selectorFor(markdown, "selected text");

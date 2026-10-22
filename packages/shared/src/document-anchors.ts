@@ -251,6 +251,7 @@ function stripBlockSyntax(line: string, absoluteOffset: number): { text: string;
 }
 
 function addInlineMarkdownText(builder: ProjectionBuilder, text: string, sourceOffset: number): void {
+  const formatting = formattingDelimiterIndexes(text);
   for (let index = 0; index < text.length; index += 1) {
     const char = text[index] ?? "";
     const absolute = sourceOffset + index;
@@ -286,16 +287,101 @@ function addInlineMarkdownText(builder: ProjectionBuilder, text: string, sourceO
       continue;
     }
 
-    if (isMarkdownFormattingChar(char, text, index)) continue;
+    if (formatting.has(index)) continue;
+    if (char === "\\" && isAsciiPunctuation(text[index + 1])) {
+      builder.addChar(text[index + 1] ?? "", absolute + 1, absolute + 2);
+      index += 1;
+      continue;
+    }
 
     builder.addChar(char, absolute, absolute + 1);
   }
 }
 
-function isMarkdownFormattingChar(char: string, text: string, index: number): boolean {
-  if (char === "*" || char === "_" || char === "~") return true;
-  if (char === "\\" && index + 1 < text.length) return true;
-  return false;
+interface DelimiterRun {
+  char: string;
+  start: number;
+  end: number;
+  canOpen: boolean;
+  canClose: boolean;
+}
+
+function formattingDelimiterIndexes(text: string): Set<number> {
+  const runs: DelimiterRun[] = [];
+  let index = 0;
+  while (index < text.length) {
+    const char = text[index] ?? "";
+    if (char === "`") {
+      const closing = text.indexOf("`", index + 1);
+      if (closing > index + 1) {
+        index = closing + 1;
+        continue;
+      }
+    }
+    if (char === "\\" && isAsciiPunctuation(text[index + 1])) {
+      index += 2;
+      continue;
+    }
+    if (char !== "*" && char !== "_" && char !== "~") {
+      index += 1;
+      continue;
+    }
+    let end = index + 1;
+    while (text[end] === char) end += 1;
+    const before = text[index - 1] ?? " ";
+    const after = text[end] ?? " ";
+    const leftFlanking = !isWhitespace(after) && (!isPunctuation(after) || isWhitespace(before) || isPunctuation(before));
+    const rightFlanking = !isWhitespace(before) && (!isPunctuation(before) || isWhitespace(after) || isPunctuation(after));
+    if (char !== "~" || end - index <= 2) {
+      runs.push({
+        char,
+        start: index,
+        end,
+        canOpen: char === "_" ? leftFlanking && (!rightFlanking || isPunctuation(before)) : leftFlanking,
+        canClose: char === "_" ? rightFlanking && (!leftFlanking || isPunctuation(after)) : rightFlanking,
+      });
+    }
+    index = end;
+  }
+
+  const formatting = new Set<number>();
+  const openers: DelimiterRun[] = [];
+  for (const run of runs) {
+    if (run.canClose) {
+      const openerIndex = findLastOpener(openers, run);
+      if (openerIndex !== -1) {
+        const opener = openers[openerIndex]!;
+        openers.length = openerIndex;
+        for (let position = opener.start; position < opener.end; position += 1) formatting.add(position);
+        for (let position = run.start; position < run.end; position += 1) formatting.add(position);
+        continue;
+      }
+    }
+    if (run.canOpen) openers.push(run);
+  }
+  return formatting;
+}
+
+function findLastOpener(openers: DelimiterRun[], closer: DelimiterRun): number {
+  for (let index = openers.length - 1; index >= 0; index -= 1) {
+    const opener = openers[index]!;
+    if (opener.char !== closer.char) continue;
+    if (closer.char === "~" && opener.end - opener.start !== closer.end - closer.start) continue;
+    return index;
+  }
+  return -1;
+}
+
+function isWhitespace(char: string): boolean {
+  return /\s/u.test(char);
+}
+
+function isPunctuation(char: string): boolean {
+  return /[\p{P}\p{S}]/u.test(char);
+}
+
+function isAsciiPunctuation(char: string | undefined): boolean {
+  return char !== undefined && /^[!-/:-@[-`{-~]$/.test(char);
 }
 
 function findOccurrences(text: string, quote: string): number[] {
